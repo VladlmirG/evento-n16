@@ -110,19 +110,36 @@ EventSchema.index({ slug: 1 }, { unique: true });
 /**
  * Pre-save hook to generate slug from title and normalize date/time
  * - Generates URL-friendly slug only when title changes
+ * - Appends unique suffix to prevent collisions
  * - Normalizes date to ISO format (YYYY-MM-DD)
  * - Ensures time is in consistent format (HH:MM)
  */
 EventSchema.pre('save', async function (next) {
   // Generate slug if title is new or modified
   if (this.isModified('title')) {
-    this.slug = this.title
+    const baseSlug = this.title
       .toLowerCase()
       .trim()
       .replace(/[^\w\s-]/g, '') // Remove special characters
       .replace(/\s+/g, '-') // Replace spaces with hyphens
-      .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+      .replace(/-+/g, '-') // Replace multiple hyphons with single hyphen
       .replace(/^-+|-+$/g, ''); // Remove leading/trailing hyphens
+    
+    // Try base slug first
+    this.slug = baseSlug;
+    
+    // Check if slug already exists (excluding current document)
+    const Event = mongoose.models.Event || mongoose.model<IEvent>('Event', EventSchema);
+    const existingEvent = await Event.findOne({ 
+      slug: this.slug, 
+      _id: { $ne: this._id } 
+    });
+    
+    // If collision detected, append timestamp-based suffix
+    if (existingEvent) {
+      const suffix = Date.now().toString(36); // Base36 timestamp for conciseness
+      this.slug = `${baseSlug}-${suffix}`;
+    }
   }
 
   // Normalize date to ISO format (YYYY-MM-DD)

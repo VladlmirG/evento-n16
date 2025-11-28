@@ -45,8 +45,14 @@ BookingSchema.index({ eventId: 1 });
 BookingSchema.pre('save', async function (next) {
   // Only validate eventId if it's new or modified
   if (this.isModified('eventId')) {
-    // Dynamically import Event model to avoid circular dependency
-    const Event = mongoose.model('Event');
+    // Safely obtain Event model: check if already registered, import if needed, then get model
+    let Event = mongoose.models['Event'];
+    
+    if (!Event) {
+      // Import event model to ensure it's registered
+      const eventModule = await import('./event.model');
+      Event = eventModule.default || mongoose.model('Event');
+    }
     
     const eventExists = await Event.exists({ _id: this.eventId });
     
