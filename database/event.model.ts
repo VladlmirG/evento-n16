@@ -1,4 +1,4 @@
-import mongoose, { Document, Model, Schema } from 'mongoose';
+import { Schema, model, models, Document } from 'mongoose';
 
 // TypeScript interface for Event document
 export interface IEvent extends Document {
@@ -26,25 +26,29 @@ const EventSchema = new Schema<IEvent>(
       type: String,
       required: [true, 'Title is required'],
       trim: true,
+      maxlength: [100, 'Title cannot exceed 100 characters'],
     },
     slug: {
       type: String,
       unique: true,
+      lowercase: true,
       trim: true,
     },
     description: {
       type: String,
       required: [true, 'Description is required'],
       trim: true,
+      maxlength: [1000, 'Description cannot exceed 1000 characters'],
     },
     overview: {
       type: String,
       required: [true, 'Overview is required'],
       trim: true,
+      maxlength: [500, 'Overview cannot exceed 500 characters'],
     },
     image: {
       type: String,
-      required: [true, 'Image is required'],
+      required: [true, 'Image URL is required'],
       trim: true,
     },
     venue: {
@@ -60,17 +64,18 @@ const EventSchema = new Schema<IEvent>(
     date: {
       type: String,
       required: [true, 'Date is required'],
-      trim: true,
     },
     time: {
       type: String,
       required: [true, 'Time is required'],
-      trim: true,
     },
     mode: {
       type: String,
       required: [true, 'Mode is required'],
-      trim: true,
+      enum: {
+        values: ['online', 'offline', 'hybrid'],
+        message: 'Mode must be either online, offline, or hybrid',
+      },
     },
     audience: {
       type: String,
@@ -81,8 +86,8 @@ const EventSchema = new Schema<IEvent>(
       type: [String],
       required: [true, 'Agenda is required'],
       validate: {
-        validator: (v: string[]) => Array.isArray(v) && v.length > 0 && v.every(item => item.trim().length > 0),
-        message: 'Agenda must contain at least one non-empty item',
+        validator: (v: string[]) => v.length > 0,
+        message: 'At least one agenda item is required',
       },
     },
     organizer: {
@@ -94,98 +99,91 @@ const EventSchema = new Schema<IEvent>(
       type: [String],
       required: [true, 'Tags are required'],
       validate: {
-        validator: (v: string[]) => Array.isArray(v) && v.length > 0 && v.every(item => item.trim().length > 0),
-        message: 'Tags must contain at least one non-empty item',
+        validator: (v: string[]) => v.length > 0,
+        message: 'At least one tag is required',
       },
     },
   },
   {
-    timestamps: true,
+    timestamps: true, // Auto-generate createdAt and updatedAt
   }
 );
 
-// Create unique index on slug
-EventSchema.index({ slug: 1 }, { unique: true });
+// Pre-save hook for slug generation and data normalization
+EventSchema.pre('save', function (next) {
+  const event = this as IEvent;
 
-/**
- * Pre-save hook to generate slug from title and normalize date/time
- * - Generates URL-friendly slug only when title changes
- * - Appends unique suffix to prevent collisions
- * - Normalizes date to ISO format (YYYY-MM-DD)
- * - Ensures time is in consistent format (HH:MM)
- */
-EventSchema.pre('save', async function (next) {
-  // Generate slug if title is new or modified
-  if (this.isModified('title')) {
-    const baseSlug = this.title
-      .toLowerCase()
-      .trim()
-      .replace(/[^\w\s-]/g, '') // Remove special characters
-      .replace(/\s+/g, '-') // Replace spaces with hyphens
-      .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
-      .replace(/^-+|-+$/g, ''); // Remove leading/trailing hyphens
-    
-    // Try base slug first
-    this.slug = baseSlug;
-    
-    // Check if slug already exists (excluding current document)
-    const Event = mongoose.models.Event || mongoose.model<IEvent>('Event', EventSchema);
-    const existingEvent = await Event.findOne({ 
-      slug: this.slug, 
-      _id: { $ne: this._id } 
-    });
-    
-    // If collision detected, append timestamp-based suffix
-    if (existingEvent) {
-      const suffix = Date.now().toString(36); // Base36 timestamp for conciseness
-      this.slug = `${baseSlug}-${suffix}`;
-    }
+  // Generate slug only if title changed or document is new
+  if (event.isModified('title') || event.isNew) {
+    event.slug = generateSlug(event.title);
   }
 
-  // Normalize date to ISO format (YYYY-MM-DD)
-  if (this.isModified('date')) {
-    const parsedDate = new Date(this.date);
-    if (isNaN(parsedDate.getTime())) {
-      throw new Error('Invalid date format. Expected a valid date string.');
-    }
-    this.date = parsedDate.toISOString().split('T')[0];
+  // Normalize date to ISO format if it's not already
+  if (event.isModified('date')) {
+    event.date = normalizeDate(event.date);
   }
 
-  // Normalize time format to HH:MM (24-hour format)
-  if (this.isModified('time')) {
-    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
-    const time12Regex = /^(0?[1-9]|1[0-2]):([0-5][0-9])\s?(AM|PM)$/i;
-
-    // If already in HH:MM format, validate and pad if needed
-    if (timeRegex.test(this.time)) {
-      const [hours, minutes] = this.time.split(':');
-      this.time = `${hours.padStart(2, '0')}:${minutes}`;
-    }
-    // Convert 12-hour format to 24-hour format
-    else if (time12Regex.test(this.time)) {
-      const match = this.time.match(time12Regex);
-      if (match) {
-        let hours = parseInt(match[1], 10);
-        const minutes = match[2];
-        const period = match[3].toUpperCase();
-
-        if (period === 'PM' && hours !== 12) hours += 12;
-        if (period === 'AM' && hours === 12) hours = 0;
-
-        this.time = `${hours.toString().padStart(2, '0')}:${minutes}`;
-      }
-    } else {
-      throw new Error(
-        'Invalid time format. Expected HH:MM (24-hour) or HH:MM AM/PM (12-hour).'
-      );
-    }
+  // Normalize time format (HH:MM)
+  if (event.isModified('time')) {
+    event.time = normalizeTime(event.time);
   }
 
   next();
 });
 
-// Prevent model overwrite during hot reloads in development
-const Event: Model<IEvent> =
-  mongoose.models.Event || mongoose.model<IEvent>('Event', EventSchema);
+// Helper function to generate URL-friendly slug
+function generateSlug(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '') // Remove special characters
+    .replace(/\s+/g, '-') // Replace spaces with hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+}
+
+// Helper function to normalize date to ISO format
+function normalizeDate(dateString: string): string {
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) {
+    throw new Error('Invalid date format');
+  }
+  return date.toISOString().split('T')[0]; // Return YYYY-MM-DD format
+}
+
+// Helper function to normalize time format
+function normalizeTime(timeString: string): string {
+  // Handle various time formats and convert to HH:MM (24-hour format)
+  const timeRegex = /^(\d{1,2}):(\d{2})(\s*(AM|PM))?$/i;
+  const match = timeString.trim().match(timeRegex);
+  
+  if (!match) {
+    throw new Error('Invalid time format. Use HH:MM or HH:MM AM/PM');
+  }
+  
+  let hours = parseInt(match[1]);
+  const minutes = match[2];
+  const period = match[4]?.toUpperCase();
+  
+  if (period) {
+    // Convert 12-hour to 24-hour format
+    if (period === 'PM' && hours !== 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+  }
+  
+  if (hours < 0 || hours > 23 || parseInt(minutes) < 0 || parseInt(minutes) > 59) {
+    throw new Error('Invalid time values');
+  }
+  
+  return `${hours.toString().padStart(2, '0')}:${minutes}`;
+}
+
+// Create unique index on slug for better performance
+EventSchema.index({ slug: 1 }, { unique: true });
+
+// Create compound index for common queries
+EventSchema.index({ date: 1, mode: 1 });
+
+const Event = models.Event || model<IEvent>('Event', EventSchema);
 
 export default Event;
